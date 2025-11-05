@@ -52,5 +52,14 @@ docker push gitopsitmo/gitops-app:0.1.0
 docker pull gitopsitmo/gitops-app:0.1.0
 ```
 
+## Git
+#### Настроена стандартная структура Spring Boot проекта
+
+#### Реализованы контроллеры для каждого endpoint
+
+#### Добавлены конфигурационные файлы
+
+#### Настроен .gitignore для Java проекта
+
 
 
