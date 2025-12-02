@@ -3,7 +3,6 @@
 ## Описание изменений
 - Интегрирован инструмент Trivy для сканирования уязвимостей безопасности
 - Настроено сканирование Docker образов в CI/CD пайплайне
-- Реализована проверка как системных пакетов (Alpine Linux), так и зависимостей приложения (JAR)
 - Добавлен детализированный отчет о найденных уязвимостях
 
 ## 🎯 Цель изменений
@@ -14,21 +13,11 @@
 - Обеспечения compliance требований безопасности
 
 ## ✅ Тип изменений
-- [x] Новая функциональность (feature)
-- [x] Техническое улучшение (refactor / CI / инфраструктура)
-
+-  Исправление ошибки (bug fix)
 ## 🧪 Проверка
-- [x] Trivy успешно интегрирован в GitHub Actions workflow
-- [x] Сканирование выполняется для двух типов целей:
-  - Базовый образ Alpine Linux (системные пакеты)
-  - JAR-файлы приложения (Java зависимости)
-- [x] Генерируется структурированный отчет с:
-  - Уровнями серьезности (MEDIUM, HIGH, CRITICAL)
-  - CVE идентификаторами
-  - Ссылками на детальную информацию
-  - Рекомендуемыми версиями для фикса
-- [x] Workflow корректно обрабатывает результаты сканирования
-      
+- Приложение успешно собирается локально
+- Docker-образ собран и запущен
+    
 # Настройка CI для Pull Request
 **Что было сделано в этом PR:**
 - Обновлены версии уязвимых зависимостей на основе результатов сканирования Trivy
@@ -92,10 +81,6 @@
 - Поддержки semantic versioning для лучшего контроля изменений
 - Устранения ручного управления версиями и связанных с этим ошибок
 
-## ✅ Тип изменений
-- [x] Новая функциональность (feature)
-- [x] Техническое улучшение (refactor / CI / инфраструктура)
-
 ## 🧪 Проверка
 - [x] Автоматическое определение версии из git тегов работает корректно
 - [x] GitHub Actions успешно извлекает версию из последнего git tag
@@ -108,25 +93,102 @@
 
 ### Автоматическое определение версии:
 ```yaml
-# В GitHub Actions workflow
-- name: Get version from tag
-  id: version
-  uses: actions/github-script@v6
-  with:
-    script: |
-      const tag = context.ref.replace('refs/tags/', '')
-      return tag.startsWith('v') ? tag.slice(1) : tag
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/.."
+VERSION_FILE="${REPO_ROOT}/VERSION"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/bump-version.sh [major|minor|patch|none]
+Increments the version stored in the VERSION file using semantic versioning rules.
+  major - increment MAJOR, reset MINOR and PATCH to 0
+  minor - increment MINOR, reset PATCH to 0
+  patch - increment PATCH
+  none  - leave the version untouched (useful for validation)
+EOF
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 1
+fi
+
+action="$1"
+case "$action" in
+  major|minor|patch|none)
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown action: $action" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "VERSION file not found at $VERSION_FILE" >&2
+  exit 1
+fi
+
+VERSION_RAW="$(tr -d '\r' < "$VERSION_FILE" | tr -d ' \t' | tr -d '\n')"
+if [[ -z "$VERSION_RAW" ]]; then
+  echo "VERSION file is empty" >&2
+  exit 1
+fi
+
+if [[ ! "$VERSION_RAW" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  echo "VERSION must follow MAJOR.MINOR.PATCH format. Found: $VERSION_RAW" >&2
+  exit 1
+fi
+
+MAJOR="${BASH_REMATCH[1]}"
+MINOR="${BASH_REMATCH[2]}"
+PATCH="${BASH_REMATCH[3]}"
+
+case "$action" in
+  major)
+    MAJOR=$((MAJOR + 1))
+    MINOR=0
+    PATCH=0
+    ;;
+  minor)
+    MINOR=$((MINOR + 1))
+    PATCH=0
+    ;;
+  patch)
+    PATCH=$((PATCH + 1))
+    ;;
+  none)
+    ;;
+esac
+
+NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+if [[ "$action" != "none" ]]; then
+  printf '%s\n' "$NEW_VERSION" > "$VERSION_FILE"
+fi
+
+if [[ "$action" == "none" ]]; then
+  echo "Version unchanged: $NEW_VERSION"
+else
+  echo "Version bumped: $VERSION_RAW -> $NEW_VERSION"
+fi
 ```
 
 # Manifests
 # Создание Helm-чарта 
 
 ## Описание изменений
-- Настроен ArgoCD для автоматического развертывания приложения в Kubernetes
-- Реализован GitOps подход с синхронизацией состояния кластера с репозиторием
-- Созданы Application манифесты для управления развертыванием
-- Настроены health checks и sync policies
-- Реализовано автоматическое обновление приложения при изменениях в git
+- Создан Helm-чарт со структурой стандартного шаблона
+- Шаблонизированы текущие Kubernetes-манифесты
+- Параметризированы основные настройки через values.yaml
+- Опубликован собранный чарт в Docker Hub в виде OCI-паке
 
 ## 🎯 Цель изменений
 Для внедрения GitOps методологии и автоматизации процессов развертывания:
@@ -136,183 +198,78 @@
 - Повышение надежности и воспроизводимости развертываний
 - Обеспечение соответствия состояния кластера желаемому состоянию в git
 
-## ✅ Тип изменений
-- [x] Новая функциональность (feature)
-- [x] Техническое улучшение (refactor / CI / инфраструктура)
-
 ## 🧪 Проверка
-- [x] ArgoCD успешно развернут в кластере Kubernetes
-- [x] Application ресурсы созданы и синхронизированы
-- [x] Автоматическая синхронизация работает при изменениях в git
-- [x] Health checks корректно отслеживают состояние приложения
-- [x] Rollback работает через git revert
-- [x] Настроены уведомления о статусе синхронизации
-- [x] Проверена работа self-healing при сбоях
+- Helm-чарт устанавливается в кластер без ошибок
+- Основные параметры приложения настраиваются через values.yaml
+- Чарт опубликован в Docker Hub и доступен для установки
+- helm install demo-app ./helm-chart/ -n dev --create-namespace успешно деплоит приложение
 
-## 🔧 Реализованная функциональность
-
-### Компоненты GitOps инфраструктуры:
-- **ArgoCD** - оператор GitOps для Kubernetes
-- **Application CRD** - кастомный ресурс для управления приложениями
-- **Sync Policies** - политики автоматической синхронизации
-- **Health Checks** - проверки работоспособности приложения
-
-### Конфигурация ArgoCD Application:
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: gitops-app
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: 'https://github.com/devops-itmo-learn/gitops_manifests'
-    path: apps/gitops-app
-    targetRevision: HEAD
-  destination:
-    server: 'https://kubernetes.default.svc'
-    namespace: gitops-app
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-    - CreateNamespace=true
-```
 # Добавление Helm Lint в CI/CD пайплайн
 **Что было сделано в этом PR:**
-- Настроен мониторинг ArgoCD с помощью встроенных метрик Prometheus
-- Созданы специализированные дашборды Grafana для отслеживания состояния ArgoCD
-- Реализованы алерты для критических событий ArgoCD
-- Настроен сбор метрик производительности и синхронизации приложений
-- Добавлены метрики для мониторинга состояния GitOps операций
+- Добавлена автоматическая проверка Helm чартов в CI/CD пайплайн
+- Создана job в GitHub Actions:
+- helmlint для проверки Helm чартов в папке helm-chart
+- Проверка helm-chart выполняется только если директория существует
 
 ## 🎯 Цель изменений
-Для обеспечения полной observability GitOps инфраструктуры:
-- Мониторинг здоровья и производительности ArgoCD
-- Отслеживание статуса синхронизации всех приложений
-- Обнаружение проблем с подключением к git репозиториям
-- Мониторинг производительности Kubernetes API взаимодействий
-- Своевременное оповещение о проблемах в GitOps процессах
-
-## 🧪 Проверка
-
-- [x] Метрики ArgoCD доступны в Prometheus
-- [x] Дашборды Grafana отображают корректные данные
-- [x] Алерты срабатывают при проблемных сценариев
-- [x] Мониторинг покрывает все ключевые компоненты ArgoCD
-- [x] Отслеживается статус синхронизации всех приложений
-- [x] Настроены уведомления о failed sync операциях
-- [x] Проверен мониторинг производительности контроллеров
+- Обеспечить качество и валидность Helm шаблонов
+- Проверять корректность Helm чартов перед мержем в основные ветки
 
 ## 🔧 Реализованная функциональность
 
-### Собираемые метрики ArgoCD:
-
-**Метрики приложений:**
-- `argocd_app_info` - информация о состоянии приложений
-- `argocd_app_sync_status` - статус синхронизации
-- `argocd_app_health_status` - health status приложений
-- `argocd_app_sync_total` - счетчик операций синхронизации
-
-**Метрики производительности:**
-- `argocd_redis_request_duration_seconds` - latency Redis
-- `argocd_repo_server_request_duration_seconds` - производительность repo server
-- `argocd_controller_workqueue_depth` - глубина очереди контроллера
-
-**Метрики API:**
-- `argocd_api_server_request_duration_seconds` - latency API сервера
-- `argocd_api_server_requests_total` - счетчик запросов к API
-
-### Дашборды Grafana:
-
-**ArgoCD Overview:**
-- Общее состояние кластера ArgoCD
-- Статус всех приложений (Healthy/Synced)
-- Количество успешных/неуспешных синхронизаций
-- Производительность компонентов ArgoCD
-
-**Application Details:**
-- Детальная информация по каждому приложению
-- История синхронизаций
-- Время последней успешной синхронизации
-- Состояние health checks
-
-### Настроенные алерты:
-
-```yaml
-- alert: ArgoCDAppOutOfSync
-  expr: argocd_app_sync_status == 1
-  for: 5m
-  labels:
-    severity: warning
-  annotations:
-    summary: "Application {{ $labels.name }} is out of sync"
-
-- alert: ArgoCDAppUnhealthy
-  expr: argocd_app_health_status != 1
-  for: 2m
-  labels:
-    severity: critical
-  annotations:
-    summary: "Application {{ $labels.name }} is unhealthy"
+### Добавлен HelmLint
 ```
-# Настройка управления секретами с помощью External Secrets
+name: YAML and Helm Lint
+
+on:
+  pull_request:
+@@ -26,3 +26,24 @@ jobs:
+
+      - name: Run yamllint
+        run: yamllint ./manifests/k8s
+
+  helmlint:
+    name: Check Helm charts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.14.0'
+
+      - name: Run helm lint
+        run: |
+          if [ -d "./helm-chart" ]; then
+            helm lint ./helm-chart
+          else
+            echo "Directory ./manifests/helm-chart not found, skipping helm lint..."
+          fi
+```
+
+# Доработка CI манифестов
 
 ## Описание изменений
-- Развернут External Secrets Operator в Kubernetes кластере
-- Интегрирован с AWS Secrets Manager для хранения секретов
-- Созданы ExternalSecret ресурсы для управления секретами приложения
-- Настроены SecretStore ресурсы для конфигурации провайдеров
-- Реализовано автоматическое обновление секретов при изменении в внешних системах
-- Настроены права доступа через IAM роли и Service Accounts
+- Расширен существующий workflow YAML linting
+- Добавлены проверки Helm-чарта:
+- helm lint для линтинга чарта
+- helm template для генерации Kubernetes-манифестов
+- kubeconform для валидации схем манифестов
+- Добавлен запуск Checkov для проверки безопасности и соответствия best practices
+- Все проверки выполняются при открытии Pull Request
 
 ## 🎯 Цель изменений
-Для безопасного и эффективного управления секретами в GitOps окружении:
-- Исключение секретов из git репозитория
-- Централизованное хранение секретов в специализированных системах
-- Автоматическое обновление секретов в кластере при изменениях
-- Соблюдение security best practices
-- Упрощение ротации секретов
+- Обеспечить автоматическую проверку формата YAML, корректности Helm-чартов и безопасность инфраструктуры перед слиянием PR.
 
 ## ✅ Тип изменений
-- [x] Новая функциональность (feature)
 - [x] Техническое улучшение (refactor / CI / инфраструктура)
 
 ## 🧪 Проверка
-- [x] External Secrets Operator успешно развернут в кластере
-- [x] Настроена аутентификация с AWS Secrets Manager
-- [x] Секреты автоматически создаются в Kubernetes из внешних источников
-- [x] Проверено автоматическое обновление при изменении секретов в AWS
-- [x] Настроены правильные права доступа через IAM roles
-- [x] Приложение корректно работает с секретами из External Secrets
-- [x] Проверена работа при ротации секретов
-
-## 🔧 Реализованная функциональность
-
-### Архитектура решения:
-
-**Компоненты:**
-- **External Secrets Operator** - контроллер для синхронизации секретов
-- **SecretStore** - конфигурация подключения к внешним системам
-- **ExternalSecret** - определение какие секреты синхронизировать
-- **AWS Secrets Manager** - внешнее хранилище секретов
-
-### Конфигурация SecretStore:
-```yaml
-apiVersion: external-secrets.io/v1beta1
-kind: SecretStore
-metadata:
-  name: aws-secret-store
-  namespace: gitops-app
-spec:
-  provider:
-    aws:
-      service: SecretsManager
-      region: eu-west-1
-      auth:
-        jwt:
-          serviceAccountRef:
-            name: external-secrets-sa
-```
+- Workflow запускается на Pull Request
+- yamllint проверяет формат YAML-файлов
+- Helm-чарт проходит линтинг и генерацию манифестов
+- kubeconform валидирует сгенерированные манифесты
+- Checkov выполняет проверку безопасности манифестов и чарта
