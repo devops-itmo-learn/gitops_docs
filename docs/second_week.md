@@ -3,233 +3,274 @@
 ## Обзор
 
 **Период:** Неделя 2  
-**Технологии:** Kubernetes, Docker, GitOps, Spring Boot  
-**Команда:** Коровкин Артём Александрович, Котков Дмитрий Александрович, Баранов Денис Сергеевич, Шайхиев Эльдар Ильхамович
+**Технологии:** Kubernetes, Docker, GitOps, Spring Boot
 
 ## Выполненные задачи
 
 ### 1. Docker Image Оптимизация
 
-#### Многоступенчатая сборка
-```dockerfile
-# Build stage
-FROM eclipse-temurin:21-jdk-alpine AS build
-WORKDIR /app
+#### Реализована многоступенчатая сборка
+Использована двухэтапная сборка Docker образа с разделением на build и runtime стадии:
 
-# Копирование Gradle файлов и настройка разрешений
-COPY gradle/ gradle/
-COPY gradlew gradlew.bat build.gradle.kts settings.gradle.kts gradle.properties ./
-RUN chmod +x ./gradlew
+**Build стадия:**
+- Базируется на `eclipse-temurin:21-jdk-alpine`
+- Устанавливаются зависимости Gradle с кэшированием
+- Выполняется сборка Spring Boot приложения
+- Создается JAR файл приложения
 
-# Загрузка зависимостей
-RUN ./gradlew dependencies --no-daemon
+**Runtime стадия:**
+- Базируется на облегченном `eclipse-temurin:21-jre-alpine`
+- Создана безопасная среда с non-root пользователем `appuser`
+- Добавлен curl для healthcheck проверок
+- Настроены healthcheck для мониторинга состояния приложения
+- Используется только JRE, что уменьшает размер финального образа
 
-# Копирование исходного кода и сборка
-COPY src/ src/
-RUN ./gradlew bootJar --no-daemon
-
-# Runtime stage
-FROM eclipse-temurin:21-jre-alpine
-WORKDIR /app
-
-# Установка curl и создание пользователя
-RUN apk add --no-cache curl && \
-    addgroup -S appgroup && adduser -S appuser -G appgroup
-
-# Копирование JAR файла из build stage
-COPY --from=build /app/build/libs/*.jar app.jar
-
-# Настройка прав доступа
-RUN chown -R appuser:appgroup /app
-USER appuser
-
-# Экспорт порта и healthcheck
-EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:8080/healthz || exit 1
-
-ENTRYPOINT ["java", "-jar", "/app/app.jar"]
-```
-
-#### Ключевые улучшения:
+**Ключевые улучшения:**
 - ✅ **Многоступенчатая сборка** - уменьшение размера финального образа
 - ✅ **Безопасность** - запуск от non-root пользователя
-- ✅ **Health checks** - мониторинг состояния приложения
-- ✅ **Кэширование зависимостей** - ускорение сборки
-- ✅ **Минимальный runtime** - использование JRE вместо JDK
+- ✅ **Health checks** - мониторинг состояния контейнера
+- ✅ **Кэширование зависимостей** - ускорение процесса сборки
 
 ### 2. Kubernetes Manifests
 
-#### Namespace (namespace-dev.yaml)
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: dev
+#### Добавлены следующие манифесты:
+
+**1. Namespace (`namespace-dev.yaml`)**  
+Создание изолированного пространства `dev` для развертывания приложения.
+
+**2. ConfigMap (`configmap.yaml`)**  
+Хранение конфигурационных параметров приложения:
+- Порт сервера (8080)
+- Название приложения (demo-app)
+- Уровни логирования (INFO, DEBUG)
+
+**3. Secret (`secret.yaml`)**  
+Хранение чувствительных данных - учетных данных для доступа к приватному Docker registry.
+
+**4. Deployment (`deployment.yaml`)**  
+Развертывание приложения с 3 репликами и настройками:
+- Использование `imagePullSecrets` для авторизации в registry
+- Node selector для размещения подов на нодах с меткой `zone=dev`
+- Лимиты ресурсов (CPU/Memory)
+- Liveness и readiness probes для health checks
+- Environment variables из ConfigMap
+
+**5. Service (`service.yaml`)**  
+Предоставление доступа к приложению через NodePort (30080).
+
+**6. Kind Cluster Configuration (`kind-config.yaml`)**  
+Конфигурация локального Kubernetes кластера с:
+- Control-plane нодой
+- Двумя worker нодами с метками `zone=prod` и `zone=dev`
+- Пробросом порта 30080 на localhost
+
+## Инструкция по применению манифестов
+
+### Подготовительные шаги
+
+#### 1. Установка необходимых инструментов
+```bash
+# Установка Docker (если не установлен)
+# Скачайте с https://www.docker.com/products/docker-desktop
+
+# Установка Kind (Kubernetes in Docker)
+brew install kind
+
+# Установка kubectl
+brew install kubectl
 ```
 
-#### ConfigMap (configmap.yaml)
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-config
-  namespace: dev
-  labels:
-    app: demo-app
-    component: config
-data:
-  SERVER_PORT: "8080"
-  SPRING_APPLICATION_NAME: "demo-app"
-  LOGGING_LEVEL_ROOT: "INFO"
-  LOGGING_LEVEL_SPRING_WEB: "DEBUG"
+#### 2. Создание локального Kubernetes кластера
+```bash
+# Создание кластера Kind с конфигурацией
+kind create cluster --config kind-config.yaml --name gitops-cluster
+
+# Проверка создания кластера
+kubectl cluster-info
+kubectl get nodes
 ```
 
-#### Secret (secret.yaml)
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: docker-registry-secret
-  namespace: dev
-  labels:
-    app: demo-app
-    component: registry-secret
-type: kubernetes.io/dockerconfigjson
-data:
-  .dockerconfigjson: <encoded-docker-config>
+### Порядок применения манифестов
+
+**Важно соблюдать порядок, так как некоторые ресурсы зависят от других:**
+
+#### Шаг 1: Создание namespace
+```bash
+kubectl apply -f namespace-dev.yaml
 ```
 
-#### Deployment (deployment.yaml)
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: demo-app
-  namespace: dev
-  labels:
-    app: demo-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: demo-app
-  template:
-    metadata:
-      labels:
-        app: demo-app
-    spec:
-      imagePullSecrets:
-      - name: docker-registry-secret
-      nodeSelector:
-        zone: dev
-      containers:
-      - name: demo-app
-        image: gitopsitmo/gitops-app:0.1.0
-        ports:
-        - name: http
-          containerPort: 8080
-          protocol: TCP
-        envFrom:
-        - configMapRef:
-            name: app-config
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
+#### Шаг 2: Создание Secret для доступа к Docker registry
+```bash
+kubectl apply -f secret.yaml
 ```
 
-#### Service (service.yaml)
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: demo-app
-  namespace: dev
-  labels:
-    app: demo-app
-spec:
-  type: NodePort
-  selector:
-    app: demo-app
-  ports:
-  - name: http
-    port: 8080
-    targetPort: 8080
-    protocol: TCP
-    nodePort: 30080
+#### Шаг 3: Создание ConfigMap с конфигурацией
+```bash
+kubectl apply -f configmap.yaml
 ```
 
-### 3. Структура репозитория GitOps
-
+#### Шаг 4: Развертывание приложения
+```bash
+kubectl apply -f deployment.yaml
 ```
+
+#### Шаг 5: Создание Service для доступа к приложению
+```bash
+kubectl apply -f service.yaml
+```
+
+### Проверка развертывания
+
+#### Проверка состояния всех ресурсов
+```bash
+# Проверить все созданные ресурсы в namespace dev
+kubectl get all -n dev
+
+# Вывод должен содержать:
+# - 3 пода (replicas: 3)
+# - 1 deployment
+# - 1 service
+```
+
+#### Мониторинг развертывания
+```bash
+# Отслеживать статус подов
+kubectl get pods -n dev -w
+
+# Проверить логи приложения
+kubectl logs -n dev deployment/demo-app --tail=20
+
+# Проверить подробную информацию о deployment
+kubectl describe deployment demo-app -n dev
+```
+
+#### Проверка доступности приложения
+```bash
+# Проверить health endpoint
+curl http://localhost:30080/healthz
+
+# Проверить основной endpoint
+curl http://localhost:30080/api/hello
+```
+
+#### Проверка конфигурации
+```bash
+# Проверить, что ConfigMap применен
+kubectl describe configmap app-config -n dev
+
+# Проверить, что переменные окружения установлены
+kubectl exec -n dev deployment/demo-app -- env | grep SPRING
+```
+
+### Устранение неполадок
+
+Если возникли проблемы:
+
+#### 1. Проверить события в namespace
+```bash
+kubectl get events -n dev --sort-by='.lastTimestamp'
+```
+
+#### 2. Проверить состояние подов
+```bash
+# Посмотреть состояние каждого пода
+kubectl describe pods -n dev -l app=demo-app
+
+# Проверить логи конкретного пода
+kubectl logs -n dev <pod-name>
+```
+
+#### 3. Проверить доступность образа
+```bash
+# Проверить, может ли кластер скачать образ
+kubectl describe pod -n dev -l app=demo-app | grep -A 5 "Events"
+```
+
+### Удаление развертывания
+
+Для очистки среды:
+
+#### Удаление в правильном порядке
+```bash
+# 1. Удалить Service
+kubectl delete -f service.yaml
+
+# 2. Удалить Deployment
+kubectl delete -f deployment.yaml
+
+# 3. Удалить ConfigMap
+kubectl delete -f configmap.yaml
+
+# 4. Удалить Secret
+kubectl delete -f secret.yaml
+
+# 5. Удалить Namespace
+kubectl delete -f namespace-dev.yaml
+
+# Или все сразу
+kubectl delete -f ./
+```
+
+#### Удаление кластера Kind
+```bash
+kind delete cluster --name gitops-cluster
+```
+
+## Структура репозитория GitOps
+
 gitops_manifests/
-└── manifests/
-    └── k8s/
-        ├── configmap.yaml          # Конфигурация приложения
-        ├── deployment.yaml         # Деплоймент с 3 репликами
-        ├── namespace-dev.yaml      # Namespace для dev окружения
-        ├── secret.yaml            # Docker registry credentials
-        └── service.yaml           # Service с NodePort 30080
-```
 
-### 4. Конфигурация приложения
+├── manifests/ # Основная директория для Kubernetes манифестов
 
-#### Health Checks:
-- **Liveness Probe:** Проверка каждые 10 секунд после 30-секундной задержки
-- **Readiness Probe:** Проверка каждые 5 секунд после 10-секундной задержки
+│ ├── namespaces/ # Пространства имен
+
+│ ├── deployments/ # Деплойменты приложений
+
+│ ├── services/ # Сервисы
+
+│ ├── configs/ # ConfigMaps и Secrets
+
+└── README.md # Этот файл
+## Конфигурационные особенности
+
+### Health Checks
+- **Liveness Probe:** Проверка каждые 10 секунд после 30-секундной начальной задержки
+- **Readiness Probe:** Проверка каждые 5 секунд после 10-секундной начальной задержки
 - **Endpoint:** `/healthz` на порту 8080
 
-#### Ресурсы:
-- **Requests:** 100m CPU, 256Mi Memory
-- **Limits:** 500m CPU, 512Mi Memory
+### Управление ресурсами
+- **Requests (гарантированные):** 100m CPU, 256Mi Memory
+- **Limits (максимальные):** 500m CPU, 512Mi Memory
 
-#### Сетевые настройки:
+### Сетевая конфигурация
 - **Container Port:** 8080
 - **Service Port:** 8080
 - **NodePort:** 30080
+- **Доступ через:** http://localhost:30080
 
 ## Результаты
 
 ### ✅ Завершенные задачи недели 2:
-- [x] Создание Docker image
-- [x] Публикация Image в DockerHub 
-- [x] Создание namespace
-- [x] Создание ConfigMap
-- [x] Создание secret
-- [x] Создание Deployment
-- [x] Создание Service
+- [x] Создание оптимизированного Docker образа
+- [x] Публикация образа в DockerHub
+- [x] Создание namespace для изоляции окружения
+- [x] Создание ConfigMap для управления конфигурацией
+- [x] Создание Secret для безопасного хранения учетных данных
+- [x] Создание Deployment для развертывания приложения
+- [x] Создание Service для предоставления доступа к приложению
 
 ### 🚀 Достижения:
-1. **Оптимизированный Docker образ** с лучшими практиками безопасности
-2. **Полный набор Kubernetes манифестов** для развертывания приложения
-3. **Настроенные health checks** для надежной работы в production
-4. **Правильная конфигурация ресурсов** для стабильной работы
-5. **Готовое GitOps окружение** для автоматизированного деплоя
+1. **Создан полный набор Kubernetes манифестов** для развертывания приложения
+2. **Реализована многоступенчатая сборка** Docker образа с оптимизацией размера
+3. **Настроена локальная среда** для тестирования развертывания с помощью Kind
+4. **Определен порядок применения** манифестов с учетом зависимостей между ресурсами
+5. **Создана документация** с инструкциями по развертыванию и устранению неполадок
 
-### 🔧 Технические особенности:
-- Использование `nodeSelector` для контроля размещения pod'ов
-- Настройка `imagePullSecrets` для доступа к приватному registry
-- Конфигурация через ConfigMap для гибкости настроек
-- Многоуровневое логирование через environment variables
+### 🔧 Ключевые особенности реализации:
+- Использование `nodeSelector` для контроля размещения подов на определенных нодах
+- Применение `imagePullSecrets` для безопасного доступа к приватному Docker registry
+- Конфигурация приложения через ConfigMap для гибкости и переиспользования
+- Настройка health checks для обеспечения отказоустойчивости
+- Проброс портов в Kind кластере для локального тестирования
 
-Все манифесты готовы к применению в Kubernetes кластере и соответствуют best practices для production-ready развертывания.
+Данный набор манифестов позволяет развернуть Spring Boot приложение в локальном Kubernetes кластере с соблюдением базовых практик безопасности и управления конфигурацией.
